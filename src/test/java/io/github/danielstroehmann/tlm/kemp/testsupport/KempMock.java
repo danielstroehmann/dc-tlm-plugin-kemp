@@ -107,6 +107,15 @@ public final class KempMock implements AutoCloseable {
                 "{\"code\":200,\"" + param + "\":" + jsonValue + ",\"status\":\"ok\"}");
     }
 
+    /** Like a real LoadMaster: any request whose apikey is not exactly {@code key} gets HTTP 401 with an HTML body. */
+    public KempMock requireApiKey(String key) {
+        server.stubFor(post(urlEqualTo(PATH))
+                .withRequestBody(matchingJsonPath("$.apikey", com.github.tomakehurst.wiremock.client.WireMock.not(equalTo(key))))
+                .atPriority(DENY)
+                .willReturn(aResponse().withStatus(401).withHeader("Content-Type", "text/html").withBody("<html>401</html>")));
+        return this;
+    }
+
     /** The API user lacks the permission for {@code cmd}: every call of it answers "Permission denied". */
     public KempMock deny(String cmd) {
         server.stubFor(cmd(cmd).atPriority(DENY).willReturn(json(200, DENIED)));

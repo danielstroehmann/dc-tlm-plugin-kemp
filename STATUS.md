@@ -1,6 +1,6 @@
 # Status: TLM Plugin for Kemp LoadMaster
 
-As of: 2026-10-11 · Phase: first plugin version 0.1.0
+As of: 2026-10-11 · Phase: 0.2.0 (pre-release); fix for real TLM sensors, verified with a real sensor's plugin input
 
 This document records which initial configurations on Kemp LoadMasters we assume, which TLS tasks
 that are manual today the plugin is meant to automate, and which decisions are still open. How to
@@ -208,6 +208,14 @@ then via the alias in `virtualServerName` (`default/<alias>` or `<alias>`).
 | 2026-10-11 | **Case H is optional and is detected automatically.** On "Test connection" and during inventory, the plugin checks without side effects which permissions the API key has. Only with "All Permissions" does it offer the web UI certificate. For A–E, the three minimal permissions are sufficient. | Kemp allows `set admincert` only with "All Permissions". Permission check see section 7; guide for admins in [SETUP.md](SETUP.md). |
 | 2026-10-11 | **The certificate of the LoadMaster itself (web UI/API) is managed as well**, in addition to the Virtual Services where automation makes sense. | Case H is in scope. |
 | 2026-10-11 | **For the connection to the LoadMaster, the plugin accepts any certificate**: trusted or not, with or without a matching hostname. There is neither chain nor hostname verification. | The connection works with the self-signed factory certificate, via the IP address, and also after the plugin itself has replaced the web UI certificate. **Deliberately accepted risk:** anyone on the network between sensor and LoadMaster who impersonates the LoadMaster can capture the API key **and every private key the plugin installs** (they travel inside the `addcert` request), and can feed a fake inventory to TLM. Countermeasures are an isolated management network and an API user with minimal permissions. |
+
+### Verified on a real TLM sensor (2026-10-11)
+
+- The sensor delivers `plugin-info.json` with lower-case stages (`config`, `run`), the plugin name entered in
+  TLM (e.g. `Custom`) and additional settings (`plugin_upgrade`, `baseRestApiUrl`).
+- **Settings in the `sensitive` credential set arrive Base64-encoded** (the API key: 60 characters instead of
+  44). Version 0.1.0 used the value as is and got HTTP 401 from the LoadMaster; fixed in 0.2.0.
+- The SDK runtime, entry point discovery and the result upload work on the sensor as in the local simulation.
 
 ### Provisionally implemented (default in 0.1.0, confirmation pending)
 

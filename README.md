@@ -5,8 +5,8 @@ Automation plugin for **DigiCert Trust Lifecycle Manager (TLM)** that manages TL
 installation, renewal and validation. Built on the
 [TLM Plugins SDK](https://github.com/digicert/tlm-plugins-sdk-dist) (`plugin-sdk` 1.2).
 
-> Status: **0.1.0, first version.** Tested against LoadMaster 7.2.63, without a TLM tenant (local
-> simulation of the sensor). See [STATUS.md](STATUS.md).
+> Status: **0.2.0, pre-release.** All actions verified against LoadMaster 7.2.63, including the plugin input
+> format of a real TLM sensor; not yet run end-to-end in a TLM tenant. See [STATUS.md](STATUS.md).
 
 ## What the plugin does
 

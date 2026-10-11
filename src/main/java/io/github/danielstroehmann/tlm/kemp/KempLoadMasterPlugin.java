@@ -1,7 +1,13 @@
 package io.github.danielstroehmann.tlm.kemp;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Pattern;
@@ -53,6 +59,9 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
     /** Hostname, IPv4 address or bracketed IPv6 address — nothing that could alter the request URL. */
     private static final Pattern HOST = Pattern.compile("^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$|^\\[[0-9A-Fa-f:.]+\\]$");
 
+    /** Separators and format characters (no-break space, zero-width space, BOM, ...) that String.strip() keeps. */
+    private static final Pattern INVISIBLE_EDGES = Pattern.compile("^[\\p{Z}\\p{Cf}]+|[\\p{Z}\\p{Cf}]+$");
+
     private final KempConfiguration config;
     private final FlowKeyStore keyStore;
 
@@ -70,7 +79,37 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
 
     /** Overridable in tests to point at a mock LoadMaster. */
     KempClient openClient() throws WorkflowExecutionException {
-        return KempClient.connect(host(), port(), apiKey());
+        String host = host();
+        int port = port();
+        String apiKey = apiKey();
+        // Never the key itself — lengths, a short hash prefix and invisible characters (code points only) are enough
+        // to tell whether the expected key arrived.
+        log.debug("Connecting to LoadMaster {}:{} (API key as delivered: length {}, Base64-encoded {}, non-printable"
+                + " characters {}; as used: length {}, sha256 prefix {}; unmapped settings: {})", host, port,
+                config.getApiKey().length(), decodeTlmEncoding(trimInvisible(config.getApiKey())).isPresent(),
+                nonPrintable(config.getApiKey()), apiKey.length(), fingerprint(apiKey), config.unmappedSettingNames());
+        return KempClient.connect(host, port, apiKey);
+    }
+
+    /** Positions and code points of characters outside printable ASCII, e.g. "[U+FEFF at 0]" — reveals no key content. */
+    static String nonPrintable(String value) {
+        List<String> found = new ArrayList<>();
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x21 || c > 0x7E) {
+                found.add(String.format("U+%04X at %d", (int) c, i));
+            }
+        }
+        return found.isEmpty() ? "none" : found.toString();
+    }
+
+    private static String fingerprint(String secret) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(secret.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest, 0, 4);
+        } catch (NoSuchAlgorithmException e) {
+            return "n/a";
+        }
     }
 
     String host() throws WorkflowExecutionException {
@@ -95,11 +134,56 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
         throw new WorkflowExecutionException("Invalid management port: " + value);
     }
 
+    /**
+     * The key as sent to the LoadMaster. TLM delivers the value of this "sensitive" setting Base64-encoded in
+     * plugin-info.json (observed on a real sensor; not documented), so it is decoded; a plain key is used as is.
+     */
     private String apiKey() throws WorkflowExecutionException {
-        if (config == null || config.getApiKey() == null || config.getApiKey().isBlank()) {
+        String key = config == null || config.getApiKey() == null ? "" : trimInvisible(config.getApiKey());
+        key = decodeTlmEncoding(key).orElse(key);
+        // Checked after trimming: a value of only invisible characters must not become an empty key or store password.
+        if (key.isEmpty()) {
             throw new WorkflowExecutionException("Connector configuration incomplete: API key is required");
         }
-        return config.getApiKey();
+        return key;
+    }
+
+    /** Surrounding (invisible) whitespace, typical when pasting into a form, would make the LoadMaster reject the key. */
+    static String trimInvisible(String value) {
+        String result = value;
+        String previous;
+        do {
+            previous = result;
+            result = INVISIBLE_EDGES.matcher(result.strip()).replaceAll("");
+        } while (!result.equals(previous));
+        return result;
+    }
+
+    /**
+     * Decoded value if {@code value} is canonical Base64 (standard or URL-safe) of text that, after trimming invisible
+     * edges, is printable ASCII — TLM encodes the raw form input, including whitespace pasted with the key. A raw Kemp
+     * API key decodes to random binary bytes instead, so it is never mistaken for an encoded one.
+     */
+    static Optional<String> decodeTlmEncoding(String value) {
+        String unpadded = value.replaceFirst("=+$", "");
+        for (boolean urlSafe : new boolean[] { false, true }) {
+            byte[] decoded;
+            try {
+                decoded = (urlSafe ? Base64.getUrlDecoder() : Base64.getDecoder()).decode(value);
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            String canonical = (urlSafe ? Base64.getUrlEncoder() : Base64.getEncoder()).withoutPadding()
+                    .encodeToString(decoded);
+            if (!canonical.equals(unpadded)) {
+                continue;
+            }
+            String text = trimInvisible(new String(decoded, StandardCharsets.UTF_8));
+            if (!text.isEmpty() && text.chars().allMatch(c -> c >= 0x21 && c <= 0x7E)) {
+                return Optional.of(text);
+            }
+        }
+        return Optional.empty();
     }
 
     @Override

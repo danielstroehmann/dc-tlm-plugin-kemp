@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs one plugin action the way the TLM sensor does: writes plugin-info.json into an empty working
 # directory, starts the fat JAR and captures the response the SDK uploads to TPM_COMMUNICATION_URL.
+# plugin-info.json mirrors what a real TLM sensor delivers (lower-case stages, name "Custom", extra settings,
+# and the API key Base64-encoded as TLM does for "sensitive" settings).
 #
 # Usage: KEMP_HOST=lb.example.com KEMP_PORT=443 KEMP_APIKEY=... \
 #          scripts/run-plugin-action.sh <action> ['<parameters-json>']
@@ -23,11 +25,11 @@ trap 'rm -rf "$work"; if [[ -n $receiver ]]; then kill "$receiver" 2>/dev/null; 
 
 jq -n --arg h "$KEMP_HOST" --arg p "${KEMP_PORT:-443}" --arg a "$action" --arg v "$version" --argjson par "$params" '{
   executions: [
-    {stage: "CONFIG", args: {name: "kemp-loadmaster-tlm-plugin", version: $v,
-                             managementHost: $h, managementPort: $p, apiKey: $ENV.KEMP_APIKEY}},
-    {stage: "RUN", args: {action: $a, parameters: $par}}
+    {stage: "config", args: {name: "Custom", version: $v, baseRestApiUrl: null, plugin_upgrade: "true",
+                             managementHost: $h, managementPort: $p, apiKey: ($ENV.KEMP_APIKEY | @base64)}},
+    {stage: "run", args: {action: $a, parameters: $par}}
   ],
-  environment: ["PLUGIN_LOG_LVL=INFO"]
+  environment: ["PLUGIN_LOG_LVL=" + ($ENV.PLUGIN_LOG_LVL // "DEBUG")]
 }' > "$work/plugin-info.json"
 
 port=$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')

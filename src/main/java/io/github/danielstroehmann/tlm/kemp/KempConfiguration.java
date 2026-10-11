@@ -1,6 +1,14 @@
 package io.github.danielstroehmann.tlm.kemp;
 
+import java.util.Set;
+import java.util.TreeSet;
+
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+
+import lombok.AccessLevel;
 import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
 
 /**
@@ -18,4 +26,19 @@ public class KempConfiguration {
 
     @ToString.Exclude
     private String apiKey;
+
+    /** Names (never values) of settings TLM sent that this class does not map — for diagnosing field naming. */
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
+    @ToString.Exclude
+    private final Set<String> unmappedSettings = new TreeSet<>();
+
+    @JsonAnySetter
+    void unmapped(String name, Object ignored) {
+        unmappedSettings.add(name);
+    }
+
+    public Set<String> unmappedSettingNames() {
+        return Set.copyOf(unmappedSettings);
+    }
 }

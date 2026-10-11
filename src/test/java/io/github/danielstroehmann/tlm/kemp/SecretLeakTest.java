@@ -87,6 +87,62 @@ class SecretLeakTest {
         }
     }
 
+    /**
+     * openClient's DEBUG line describes the key as delivered (length, Base64 flag, invisible characters) and as used
+     * (length, SHA-256 prefix) — but neither the plain key nor its Base64 form may appear in logs or exceptions.
+     */
+    @Test
+    void connectDebugLogDescribesKeyWithoutRevealingIt() throws Exception {
+        String encoded = Base64.getEncoder().encodeToString(KEY.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String configured = " " + encoded + "\n";
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(KEY.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String prefix = java.util.HexFormat.of().formatHex(digest, 0, 4);
+        List<Throwable> errors = new ArrayList<>();
+        String log;
+        try (KempMock lm = new KempMock(true).defaults().requireApiKey(KEY); LogCapture capture = new LogCapture()) {
+            KempConfiguration config = MockedPlugin.config("127.0.0.1", String.valueOf(lm.server.httpsPort()), configured);
+            KempLoadMasterPlugin plugin = new KempLoadMasterPlugin(config, new FlowKeyStore(tmp));
+            plugin.testConnection(null);
+            lm.allHttp(401, "text/html", "<html>401</html>");
+            collect(errors, () -> plugin.refreshConfiguration(null));
+            collect(errors, () -> plugin.testConnection(null));
+            log = capture.text();
+        }
+        String line = log.lines().filter(l -> l.contains("Connecting to LoadMaster")).findFirst()
+                .orElseThrow(() -> new AssertionError("no connect debug line in: " + log));
+        assertTrue(line.contains("127.0.0.1:"), line);
+        assertTrue(line.contains("as delivered: length " + configured.length()), line);
+        assertTrue(line.contains("Base64-encoded true"), line);
+        assertTrue(line.contains("non-printable characters [U+0020 at 0, U+000A at " + (configured.length() - 1) + "]"), line);
+        assertTrue(line.contains("as used: length " + KEY.length()), line);
+        assertTrue(line.contains("sha256 prefix " + prefix), line);
+        assertTrue(line.contains("unmapped settings: []"), line);
+        assertTrue(errors.size() >= 2, "failure paths did not fail");
+        for (String secret : List.of(KEY, encoded, KEY.substring(0, KEY.length() / 2), encoded.substring(0, 20))) {
+            assertFalse(log.contains(secret), "key material found in log output: " + secret.length() + " chars");
+            for (Throwable t : errors) {
+                for (Throwable c = t; c != null; c = c.getCause()) {
+                    assertFalse(String.valueOf(c).contains(secret), "key material in exception: " + c);
+                }
+            }
+        }
+    }
+
+    @Test
+    void connectDebugLogForPlainKey() throws Exception {
+        String log;
+        try (KempMock lm = new KempMock(true).defaults().requireApiKey(KEY); LogCapture capture = new LogCapture()) {
+            new KempLoadMasterPlugin(MockedPlugin.config("127.0.0.1", String.valueOf(lm.server.httpsPort()), KEY),
+                    new FlowKeyStore(tmp)).testConnection(null);
+            log = capture.text();
+        }
+        String line = log.lines().filter(l -> l.contains("Connecting to LoadMaster")).findFirst().orElseThrow();
+        assertTrue(line.contains("Base64-encoded false"), line);
+        assertTrue(line.contains("non-printable characters none"), line);
+        assertTrue(line.contains("as delivered: length " + KEY.length()) && line.contains("as used: length " + KEY.length()), line);
+        assertFalse(log.contains(KEY));
+    }
+
     @Test
     void configurationToStringHidesApiKey() {
         assertFalse(MockedPlugin.config("lm.example.com", "443", KEY).toString().contains(KEY));

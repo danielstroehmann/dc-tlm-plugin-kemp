@@ -5,6 +5,20 @@ its GitHub Release. Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0]
+
+Fixes the connection failure seen on a real TLM sensor (verified by replaying the sensor's actual plugin
+input against a LoadMaster); still a pre-release.
+
+- Fix: "Test connection" failed with HTTP 401 on a real TLM sensor. TLM delivers the API key
+  Base64-encoded to the plugin (not documented); the plugin now decodes it. A plain key still works.
+  Certificate requests started under 0.1.0 whose installation is still pending must be restarted.
+- Surrounding whitespace and invisible characters (no-break space, zero-width space, BOM) in the API key
+  are ignored.
+- The DEBUG log shows, for diagnosing authentication problems: the API key's length and form as
+  delivered, positions and code points of non-printable characters, the length and a short SHA-256
+  prefix of the key as used (never the key), and the names of settings the plugin does not map.
+
 ## [0.1.0]
 
 First **alpha** of the Kemp LoadMaster automation plugin for DigiCert Trust Lifecycle Manager — for
