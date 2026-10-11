@@ -1,0 +1,34 @@
+# Every push and pull request: tests only — no publishable build, no release (see RELEASING.md).
+# Actions are pinned to commit SHAs (supply chain); the comment names the release.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Unit, integration and component tests
+        run: mvn -B -s settings.xml --no-transfer-progress clean test
+
+      - name: TLM SDK artifact matches the pinned checksum
+        run: scripts/verify-sdk.sh
+
+      - name: No environment-specific content
+        run: scripts/check-public.sh

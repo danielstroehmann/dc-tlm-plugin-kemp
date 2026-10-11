@@ -1,0 +1,100 @@
+{
+  "metadata": {
+    "author": "Kemp LoadMaster TLM plugin",
+    "email": "noreply@example.com"
+  },
+  "core_settings": [
+    {
+      "name": "core_attributes.sensor_id",
+      "label": "Sensor",
+      "type": "select",
+      "editable": true,
+      "optional": false,
+      "size": "l",
+      "validation": [
+        {
+          "rule": "alphaNumericRule"
+        }
+      ],
+      "options_provider": "Sensors",
+      "required": true
+    }
+  ],
+  "config_settings": [
+    {
+      "name": "config_attributes.managementHost",
+      "label": "LoadMaster (hostname or IP address)",
+      "description": "Address of the LoadMaster web UI/API; for HA pairs use the shared address.",
+      "type": "input",
+      "editable": true,
+      "optional": false,
+      "size": "l",
+      "validation": [
+        {
+          "rule": "requiredRule"
+        },
+        {
+          "rule": "customRegexRule",
+          "regex": "^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$|^\\[[0-9A-Fa-f:.]+\\]$",
+          "error_message": "Hostname, IPv4 address or IPv6 address in brackets — without protocol or port."
+        }
+      ],
+      "required": true
+    },
+    {
+      "name": "config_attributes.managementPort",
+      "label": "Web UI/API port",
+      "description": "Usually 443; often 8443 on cloud images.",
+      "type": "input",
+      "default_value": "443",
+      "editable": true,
+      "optional": false,
+      "size": "s",
+      "validation": [
+        {
+          "rule": "requiredRule"
+        },
+        {
+          "rule": "customRegexRule",
+          "regex": "^[0-9]{1,5}$",
+          "error_message": "Port as a number between 1 and 65535."
+        }
+      ],
+      "required": true
+    },
+    {
+      "name": "config_attributes.apiKey",
+      "label": "API key",
+      "description": "API key of a LoadMaster user with the permissions Certificate Creation, Intermediate Certificates and Virtual Services. With \"All Permissions\" the plugin also manages the web UI certificate.",
+      "type": "password",
+      "editable": true,
+      "optional": false,
+      "size": "l",
+      "validation": [
+        {
+          "rule": "requiredRule"
+        }
+      ],
+      "required": true
+    }
+  ],
+  "additional_settings": [],
+  "credential_sets": [
+    {
+      "name": "sensitive",
+      "fields": [
+        {
+          "name": "config_attributes.apiKey"
+        }
+      ]
+    },
+    {
+      "name": "unique",
+      "fields": [
+        {
+          "name": "config_attributes.managementHost"
+        }
+      ]
+    }
+  ]
+}

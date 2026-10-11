@@ -1,0 +1,14 @@
+# Local-only material: tests against a concrete LoadMaster, certificates incl. private keys,
+# environment-specific notes. Never commit.
+local/
+
+# commons-sync bookkeeping: contains the local source path
+.claude/commons/.manifest
+
+# Build output
+target/
+plugin-dist/
+
+# Personal IDE settings
+.vscode/
+.idea/
