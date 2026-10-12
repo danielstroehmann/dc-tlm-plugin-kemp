@@ -161,6 +161,11 @@ public final class Pem {
         }
     }
 
+    /** Key family of the certificate's public key ("RSA", "EC", ...). */
+    public static String keyFamily(X509Certificate cert) {
+        return family(cert.getPublicKey().getAlgorithm());
+    }
+
     /** BouncyCastle names EC keys "ECDSA", the JDK "EC". */
     private static String family(String algorithm) {
         return "ECDSA".equalsIgnoreCase(algorithm) ? "EC" : algorithm.toUpperCase(Locale.ROOT);

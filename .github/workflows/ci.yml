@@ -24,11 +24,14 @@ jobs:
           java-version: '17'
           cache: maven
 
+      - name: Resolve dependencies (runs no project or SDK code)
+        run: mvn -B -s settings.xml --no-transfer-progress org.apache.maven.plugins:maven-dependency-plugin:3.8.1:resolve
+
+      - name: TLM SDK artifacts match the pinned checksums (before any SDK code runs)
+        run: scripts/verify-sdk.sh
+
       - name: Unit, integration and component tests
         run: mvn -B -s settings.xml --no-transfer-progress clean test
-
-      - name: TLM SDK artifact matches the pinned checksum
-        run: scripts/verify-sdk.sh
 
       - name: No environment-specific content
         run: scripts/check-public.sh

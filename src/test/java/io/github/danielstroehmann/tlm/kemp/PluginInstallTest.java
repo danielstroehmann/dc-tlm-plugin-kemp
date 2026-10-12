@@ -371,12 +371,12 @@ class PluginInstallTest {
     }
 
     @Test
-    void partialOverlapIsAppendedAndKeepsExistingCertificate() throws Exception {
+    void partialOverlapIsInsertedBeforeTheOverlappingCertificate() throws Exception {
         sharedVs();
         store.save(flow, NEW_KEYS.getPrivate(), KEY.toCharArray());
         X509Certificate leaf = CA.issue(NEW_KEYS.getPublic(), "shared.example.com", BigInteger.valueOf(23), "shared.example.com");
         plugin.installCertificate(install("192.0.2.20", "443", null, TestPki.pem(leaf), ""));
-        assertEquals("cert-A cert-B tlm-shared.example.com", single(lm.writes("modvs")).path("CertFile").asText());
+        assertEquals("tlm-shared.example.com cert-A cert-B", single(lm.writes("modvs")).path("CertFile").asText());
     }
 
     @Test
@@ -393,16 +393,248 @@ class PluginInstallTest {
     void wildcardCoveringSpecificCertificateReplacesIt() throws Exception {
         X509Certificate leaf = storeKeyAndIssue("*.example.com"); // SAN *.example.com covers shop/portal
         plugin.installCertificate(install("192.0.2.11", "443", null, TestPki.pem(leaf), ""));
-        assertEquals("tlm-wildcard.example.com shop", single(lm.writes("modvs")).path("CertFile").asText());
+        assertEquals("tlm-wildcard.example.com", single(lm.writes("modvs")).path("CertFile").asText(),
+                "every completely covered entry is dropped");
     }
 
     @Test
-    void specificCertificateNeverReplacesWildcard() throws Exception {
+    void specificCertificateGoesBeforeOverlappingWildcard() throws Exception {
         X509Certificate wildcard = CA.issue(TestPki.rsa(2048).getPublic(), "*.example.com", BigInteger.valueOf(25), "*.example.com");
         lm.vs(8, "192.0.2.21", 443, "tcp", "wild", true, "wild-cert").readcert("wild-cert", TestPki.pem(wildcard));
         X509Certificate leaf = storeKeyAndIssue("www.example.com");
         plugin.installCertificate(install("192.0.2.21", "443", null, TestPki.pem(leaf), ""));
-        assertEquals("wild-cert tlm-www.example.com", single(lm.writes("modvs")).path("CertFile").asText());
+        assertEquals("tlm-www.example.com wild-cert", single(lm.writes("modvs")).path("CertFile").asText(),
+                "a specific name never replaces a wildcard, but must win for its host");
+    }
+
+    @Test
+    void insertedBeforeFirstOverlappingEntryNotAtTheFront() throws Exception {
+        X509Certificate certB = CA.issue(TestPki.rsa(2048).getPublic(), "b.example.com", BigInteger.valueOf(26), "b.example.com");
+        X509Certificate certA = CA.issue(TestPki.rsa(2048).getPublic(), "a.example.com", BigInteger.valueOf(27),
+                "a.example.com", "shared.example.com");
+        X509Certificate wild = CA.issue(TestPki.rsa(2048).getPublic(), "*.example.com", BigInteger.valueOf(28), "*.example.com");
+        lm.vs(9, "192.0.2.22", 443, "tcp", "order", true, "cert-B cert-A wild")
+                .readcert("cert-B", TestPki.pem(certB)).readcert("cert-A", TestPki.pem(certA)).readcert("wild", TestPki.pem(wild));
+        store.save(flow, NEW_KEYS.getPrivate(), KEY.toCharArray());
+        X509Certificate leaf = CA.issue(NEW_KEYS.getPublic(), "shared.example.com", BigInteger.valueOf(29), "shared.example.com",
+                "new.example.org");
+        plugin.installCertificate(install("192.0.2.22", "443", null, TestPki.pem(leaf), ""));
+        assertEquals("cert-B tlm-shared.example.com cert-A wild", single(lm.writes("modvs")).path("CertFile").asText());
+    }
+
+    @Test
+    void newWildcardOverlappingSpecificIsInsertedBeforeIt() throws Exception {
+        // *.example.com does not cover cert-A (a + a.b...) completely, but overlaps it.
+        X509Certificate certA = CA.issue(TestPki.rsa(2048).getPublic(), "a.example.com", BigInteger.valueOf(30),
+                "a.example.com", "deep.a.example.com");
+        lm.vs(10, "192.0.2.23", 443, "tcp", "wild-new", true, "other cert-A")
+                .readcert("other", TestPki.pem(CA.issue(TestPki.rsa(2048).getPublic(), "x.example.net", BigInteger.valueOf(31),
+                        "x.example.net")))
+                .readcert("cert-A", TestPki.pem(certA));
+        X509Certificate leaf = storeKeyAndIssue("*.example.com");
+        plugin.installCertificate(install("192.0.2.23", "443", null, TestPki.pem(leaf), ""));
+        assertEquals("other tlm-wildcard.example.com cert-A", single(lm.writes("modvs")).path("CertFile").asText());
+    }
+
+    /**
+     * First install on a service with the given entries (identifier to DNS names; {@code null} names = unreadable
+     * certificate) and a new certificate for {@code newNames}; returns the CertFile sent with modvs.
+     */
+    private String firstInstall(java.util.LinkedHashMap<String, String[]> entries, String... newNames) throws Exception {
+        BigInteger serial = BigInteger.valueOf(1000);
+        for (var e : entries.entrySet()) {
+            serial = serial.add(BigInteger.ONE);
+            if (e.getValue() != null) {
+                lm.readcert(e.getKey(), TestPki.pem(CA.issue(TestPki.rsa(2048).getPublic(), e.getValue()[0], serial, e.getValue())));
+            }
+        }
+        lm.vs(20, "192.0.2.30", 443, "tcp", "rules", true, String.join(" ", entries.keySet()));
+        store.save(flow, NEW_KEYS.getPrivate(), KEY.toCharArray());
+        X509Certificate leaf = CA.issue(NEW_KEYS.getPublic(), "new-leaf.example.org", BigInteger.valueOf(999), newNames);
+        plugin.installCertificate(install("192.0.2.30", "443", null, TestPki.pem(leaf), ""));
+        return single(lm.writes("modvs")).path("CertFile").asText();
+    }
+
+    private static java.util.LinkedHashMap<String, String[]> entries(Object... idAndNames) {
+        java.util.LinkedHashMap<String, String[]> m = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < idAndNames.length; i += 2) {
+            m.put((String) idAndNames[i], (String[]) idAndNames[i + 1]);
+        }
+        return m;
+    }
+
+    private static String[] n(String... names) {
+        return names;
+    }
+
+    @Test
+    void coveredEntriesAreDroppedAndNewGoesBeforeFirstOverlap() throws Exception {
+        // The case that motivated the rule: new-only is dropped, NEW goes before shop+new (overlap).
+        assertEquals("tlm-new-leaf.example.org shop-new portal blog", firstInstall(entries(
+                "shop-new", n("shop.example.com", "new.example.com"), "portal", n("portal.example.com"),
+                "blog", n("blog.example.com"), "new-only", n("new.example.com")), "new.example.com"));
+    }
+
+    @Test
+    void ruleExampleSharedOverlapGoesFirst() throws Exception {
+        assertEquals("tlm-new-leaf.example.org A B", firstInstall(entries(
+                "A", n("a.example.com", "shared.example.com"), "B", n("b.example.com")), "shared.example.com"));
+    }
+
+    @Test
+    void ruleExampleAllCoveredLeavesOnlyNew() throws Exception {
+        assertEquals("tlm-new-leaf.example.org", firstInstall(entries(
+                "A", n("a.example.com"), "B", n("b.example.com")), "a.example.com", "b.example.com"));
+    }
+
+    @Test
+    void ruleExampleCoveredEntryKeepsItsPosition() throws Exception {
+        assertEquals("X tlm-new-leaf.example.org", firstInstall(entries(
+                "X", n("x.example.com"), "A", n("a.example.com")), "a.example.com"));
+    }
+
+    @Test
+    void ruleExampleSpecificBeforeWildcard() throws Exception {
+        assertEquals("tlm-new-leaf.example.org W", firstInstall(entries("W", n("*.example.com")), "www.example.com"));
+    }
+
+    @Test
+    void ruleExampleNoOverlapAppends() throws Exception {
+        assertEquals("X Y tlm-new-leaf.example.org", firstInstall(entries(
+                "X", n("x.example.com"), "Y", n("y.example.net")), "z.example.org"));
+    }
+
+    @Test
+    void unreadableEntriesAreKeptAndNeverCountAsOverlap() throws Exception {
+        assertEquals("broken tlm-new-leaf.example.org", firstInstall(entries(
+                "broken", null, "A", n("a.example.com")), "a.example.com"));
+    }
+
+    @Test
+    void unreadableOnlyListGetsNewAppended() throws Exception {
+        assertEquals("broken1 broken2 tlm-new-leaf.example.org", firstInstall(entries(
+                "broken1", null, "broken2", null), "a.example.com"));
+    }
+
+    // ---- renewal of Kemp's factory certificate (reported by the inventory) ---------------------------------
+
+    private static final X509Certificate FACTORY_CERT = TestPki.selfSigned(TestPki.rsa(2048), "Kemp Factory Example");
+
+    @Test
+    void confirmedFactoryCertificateThumbprintIsAFirstInstall() throws Exception {
+        plugin.served = (host, port) -> java.util.Optional.of(FACTORY_CERT);
+        X509Certificate leaf = storeKeyAndIssue("fresh.example.com");
+        plugin.installCertificate(install("192.0.2.12", "443", null, TestPki.pem(leaf, CA.issuing), Pem.sha256(FACTORY_CERT)));
+        assertEquals(List.of("192.0.2.12:443"), plugin.lookups);
+        assertEquals(List.of("addintermediate", "addcert", "modvs"),
+                lm.allWrites().stream().map(n -> n.path("cmd").asText()).toList());
+        assertEquals("0", single(lm.writes("addcert")).path("replace").asText());
+        assertEquals("tlm-fresh.example.com", single(lm.writes("modvs")).path("CertFile").asText());
+        assertFalse(keyStored());
+    }
+
+    @Test
+    void factoryThumbprintMatchesInSha1WithColonsAndLowerCase() throws Exception {
+        plugin.served = (host, port) -> java.util.Optional.of(FACTORY_CERT);
+        X509Certificate leaf = storeKeyAndIssue("fresh.example.com");
+        String sha1 = String.join(":", Pem.sha1(FACTORY_CERT).toLowerCase().split("(?<=\\G..)"));
+        plugin.installCertificate(install("192.0.2.12", "443", null, TestPki.pem(leaf), sha1));
+        assertEquals("tlm-fresh.example.com", single(lm.writes("modvs")).path("CertFile").asText());
+    }
+
+    @Test
+    void unreadableFactoryCertificateIsRefusedBeforeAnyWrite() throws Exception {
+        plugin.served = (host, port) -> java.util.Optional.empty();
+        X509Certificate leaf = storeKeyAndIssue("fresh.example.com");
+        WorkflowExecutionException e = assertThrows(WorkflowExecutionException.class, () -> plugin.installCertificate(
+                install("192.0.2.12", "443", null, TestPki.pem(leaf, CA.issuing), Pem.sha256(FACTORY_CERT))));
+        assertTrue(e.getMessage().contains("could not be confirmed"), e.getMessage());
+        assertTrue(e.getMessage().contains("not readable from the sensor"), e.getMessage());
+        assertEquals(List.of(), lm.allWrites());
+        assertTrue(keyStored());
+    }
+
+    @Test
+    void factoryThumbprintMismatchIsRefusedBeforeAnyWrite() throws Exception {
+        X509Certificate otherFactory = TestPki.selfSigned(TestPki.rsa(2048), "Kemp Factory Example");
+        plugin.served = (host, port) -> java.util.Optional.of(otherFactory);
+        X509Certificate leaf = storeKeyAndIssue("fresh.example.com");
+        WorkflowExecutionException e = assertThrows(WorkflowExecutionException.class, () -> plugin.installCertificate(
+                install("192.0.2.12", "443", null, TestPki.pem(leaf, CA.issuing), Pem.sha256(FACTORY_CERT))));
+        assertTrue(e.getMessage().contains("is no longer presented by 192.0.2.12:443"), e.getMessage());
+        assertTrue(e.getMessage().contains("refresh the configuration in TLM"), e.getMessage());
+        assertTrue(e.getMessage().contains("Nothing was changed."), e.getMessage());
+        assertEquals(List.of("192.0.2.12:443"), plugin.lookups);
+        assertEquals(List.of(), lm.allWrites());
+        assertTrue(keyStored());
+    }
+
+    @Test
+    void confirmedFactoryRenewalStillNeedsVirtualServicesPermission() throws Exception {
+        lm.deny("modvs");
+        plugin.served = (host, port) -> java.util.Optional.of(FACTORY_CERT);
+        X509Certificate leaf = storeKeyAndIssue("fresh.example.com");
+        WorkflowExecutionException e = assertThrows(WorkflowExecutionException.class, () -> plugin.installCertificate(
+                install("192.0.2.12", "443", null, TestPki.pem(leaf, CA.issuing), Pem.sha256(FACTORY_CERT))));
+        assertTrue(e.getMessage().contains("'Virtual Services'"), e.getMessage());
+        assertEquals(List.of(), plugin.lookups, "a missing permission is reported without any TLS lookup");
+        assertEquals(List.of(), lm.allWrites());
+    }
+
+    @Test
+    void permissionCheckRunsBeforeTheFactoryConfirmation() throws Exception {
+        lm.deny("modvs");
+        plugin.served = (host, port) -> {
+            throw new AssertionError("servedCertificate must not be called without the Virtual Services permission");
+        };
+        X509Certificate leaf = storeKeyAndIssue("fresh.example.com");
+        WorkflowExecutionException e = assertThrows(WorkflowExecutionException.class, () -> plugin.installCertificate(
+                install("192.0.2.12", "443", null, TestPki.pem(leaf), Pem.sha256(FACTORY_CERT))));
+        assertTrue(e.getMessage().contains("'Virtual Services'"), e.getMessage());
+        assertEquals(List.of(), lm.allWrites());
+    }
+
+    @Test
+    void firstInstallWithoutThumbprintOnFactoryServiceNeedsNoLookup() throws Exception {
+        X509Certificate leaf = storeKeyAndIssue("fresh.example.com");
+        plugin.installCertificate(install("192.0.2.12", "443", null, TestPki.pem(leaf), ""));
+        assertEquals(List.of(), plugin.lookups);
+        assertEquals("tlm-fresh.example.com", single(lm.writes("modvs")).path("CertFile").asText());
+    }
+
+    @Test
+    void unmatchedThumbprintWithOwnCertificateIsStillRefused() throws Exception {
+        // Mixed list: factory value plus an own certificate - not a "factory only" service, so no lookup either.
+        lm.vs(11, "192.0.2.24", 443, "tcp", "mixed", true, "0123456789abcdef0123456789abcdef app-cert");
+        X509Certificate leaf = storeKeyAndIssue("app.example.com");
+        WorkflowExecutionException e = assertThrows(WorkflowExecutionException.class, () -> plugin
+                .installCertificate(install("192.0.2.24", "443", null, TestPki.pem(leaf), Pem.sha256(FACTORY_CERT))));
+        assertTrue(e.getMessage().contains("not in use"), e.getMessage());
+        assertEquals(List.of(), plugin.lookups);
+        assertEquals(List.of(), lm.allWrites());
+    }
+
+    // ---- key family: an RSA/ECDSA pair keeps its other half -----------------------------------------------
+
+    private String firstInstallWithKeyFamilies(java.security.KeyPair newKeys) throws Exception {
+        X509Certificate rsa = CA.issue(TestPki.rsa(2048).getPublic(), "a.example.com", BigInteger.valueOf(301), "a.example.com");
+        X509Certificate ec = CA.issue(TestPki.ec("secp256r1").getPublic(), "a.example.com", BigInteger.valueOf(302), "a.example.com");
+        lm.vs(21, "192.0.2.31", 443, "tcp", "dual", true, "A_rsa A_ec")
+                .readcert("A_rsa", TestPki.pem(rsa)).readcert("A_ec", TestPki.pem(ec));
+        store.save(flow, newKeys.getPrivate(), KEY.toCharArray());
+        X509Certificate leaf = CA.issue(newKeys.getPublic(), "a.example.com", BigInteger.valueOf(303), "a.example.com");
+        plugin.installCertificate(install("192.0.2.31", "443", null, TestPki.pem(leaf), ""));
+        return single(lm.writes("modvs")).path("CertFile").asText();
+    }
+
+    @Test
+    void newRsaCertificateReplacesOnlyTheRsaHalf() throws Exception {
+        assertEquals("tlm-a.example.com A_ec", firstInstallWithKeyFamilies(TestPki.rsa(2048)));
+    }
+
+    @Test
+    void newEcCertificateReplacesOnlyTheEcHalf() throws Exception {
+        assertEquals("tlm-a.example.com A_rsa", firstInstallWithKeyFamilies(TestPki.ec("secp256r1")));
     }
 
     // ---- leaf validation and key-bound retry ---------------------------------------------------------------

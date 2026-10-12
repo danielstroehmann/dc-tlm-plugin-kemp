@@ -15,12 +15,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiFunction;
 
 import com.digicert.tlm.workflows.WorkflowExecutionException;
 
 import io.github.danielstroehmann.tlm.kemp.client.Capabilities;
 import io.github.danielstroehmann.tlm.kemp.client.KempApiException;
 import io.github.danielstroehmann.tlm.kemp.client.KempClient;
+import io.github.danielstroehmann.tlm.kemp.loadmaster.ServedCertificate;
 import io.github.danielstroehmann.tlm.kemp.loadmaster.Snapshot;
 import io.github.danielstroehmann.tlm.kemp.loadmaster.Target;
 import io.github.danielstroehmann.tlm.kemp.loadmaster.VirtualService;
@@ -40,6 +42,10 @@ final class CertificateService {
 
     private final KempClient client;
     private final Map<String, Optional<X509Certificate>> certCache = new LinkedHashMap<>();
+
+    /** Reads the certificate a service presents in the TLS handshake; replaceable in tests. */
+    BiFunction<String, Integer, Optional<X509Certificate>> servedCertificate =
+            (host, port) -> ServedCertificate.fetch(host, port, ServedCertificate.DEFAULT_TIMEOUT);
 
     CertificateService(KempClient client) {
         this.client = client;
@@ -122,7 +128,7 @@ final class CertificateService {
         for (String id : boundIdentifiers(snapshot, target)) {
             Optional<X509Certificate> bound = read(id);
             if (bound.isPresent() && fingerprints.contains(Pem.sha256(bound.get()))) {
-                log.info("Certificate is already installed as '{}' — nothing to do", id);
+                log.info("Certificate is already installed as '{}' - nothing to do", id);
                 return true;
             }
         }
@@ -186,17 +192,23 @@ final class CertificateService {
                     + " uses certificates managed by the LoadMaster's ACME client: " + acme);
         }
 
+        String renewId = null;
         if (hasThumbprint) {
-            String renewId = null;
             for (String id : vs.certificates()) {
                 if (matches(id, thumbprint)) {
                     renewId = id;
                     break;
                 }
             }
-            if (renewId == null) {
+            if (renewId == null && !vs.factoryCertificate()) {
                 throw notFound(thumbprint, vs.endpoint());
             }
+            if (renewId == null) {
+                require(caps.vsWrite(), "Virtual Services");
+                confirmFactoryCertificate(vs, thumbprint);
+            }
+        }
+        if (renewId != null) {
             boolean isAdmin = renewId.equals(snapshot.adminCertificate());
             if (isAdmin && !caps.adminCert()) {
                 throw new WorkflowExecutionException("Certificate '" + renewId + "' is also the web UI certificate;"
@@ -212,6 +224,10 @@ final class CertificateService {
             return;
         }
 
+        if (vs.factoryCertificate()) {
+            // TLM renews the built-in default certificate reported by the inventory: that is a first install.
+            log.info("Replacing Kemp's built-in certificate on {} with a first certificate", vs.endpoint());
+        }
         // First install: supersede a certificate for the same host names at its position (non-SNI clients get the
         // first entry), otherwise add the certificate as an additional SNI entry.
         require(caps.vsWrite(), "Virtual Services");
@@ -221,7 +237,7 @@ final class CertificateService {
         boolean assignmentSent = false;
         try {
             List<String> current = VirtualService.from(client.showVirtualService(vs.index())).certificates();
-            List<String> assigned = withNewCertificate(current, newId, Pem.dnsNames(chain.leaf()));
+            List<String> assigned = withNewCertificate(current, newId, chain.leaf());
             assignmentSent = true;
             client.setVirtualServiceCertificates(vs.index(), assigned);
             log.info("Assigned new certificate '{}' to {}: {}", newId, vs.endpoint(), assigned);
@@ -231,20 +247,75 @@ final class CertificateService {
         }
     }
 
-    private List<String> withNewCertificate(List<String> current, String newId, Set<String> newNames)
+    /**
+     * The built-in certificate is not readable through the API, so TLM's thumbprint is compared with the certificate
+     * the service presents right now. Refused before any write if it differs or cannot be read.
+     */
+    private void confirmFactoryCertificate(VirtualService vs, String thumbprint)
+            throws GeneralSecurityException, WorkflowExecutionException {
+        Optional<X509Certificate> presented = servedCertificate.apply(vs.address(), vs.port());
+        if (presented.isEmpty()) {
+            throw new WorkflowExecutionException("Certificate " + thumbprint + " to be replaced on " + vs.endpoint()
+                    + " could not be confirmed: the service's certificate is not readable from the sensor");
+        }
+        if (!Pem.matchesThumbprint(presented.get(), thumbprint)) {
+            // Kemp may have regenerated its built-in certificate since the last inventory (e.g. after a reboot).
+            throw new WorkflowExecutionException("Certificate " + thumbprint + " is no longer presented by "
+                    + vs.endpoint() + "; refresh the configuration in TLM and renew again. Nothing was changed.");
+        }
+    }
+
+    /**
+     * Kemp serves the first matching entry of the list (verified on 7.2.63). Entries whose names the new certificate
+     * covers completely and that use the same key type are dropped (an RSA/ECDSA pair keeps its other half); the new
+     * certificate takes the position of the first entry that it covers or overlaps, so no remaining readable entry
+     * can serve its names first. Unrelated certificates are kept; without any overlap the new one is appended.
+     */
+    private List<String> withNewCertificate(List<String> current, String newId, X509Certificate leaf)
             throws KempApiException {
-        List<String> result = new ArrayList<>(current);
-        for (int i = 0; i < result.size(); i++) {
-            Optional<X509Certificate> existing = read(result.get(i));
-            if (existing.isPresent() && covers(newNames, Pem.dnsNames(existing.get()))) {
-                log.info("New certificate supersedes '{}' (covers all its host names) on this virtual service",
-                        result.get(i));
-                result.set(i, newId);
-                return result;
+        Set<String> newNames = Pem.dnsNames(leaf);
+        List<String> result = new ArrayList<>();
+        int insertAt = -1;
+        for (String id : current) {
+            Optional<X509Certificate> existing = read(id);
+            Set<String> oldNames = existing.isPresent() ? Pem.dnsNames(existing.get()) : Set.of();
+            boolean covered = existing.isPresent() && covers(newNames, oldNames)
+                    && Pem.keyFamily(existing.get()).equals(Pem.keyFamily(leaf));
+            if (insertAt < 0 && (covered || overlaps(newNames, oldNames))) {
+                insertAt = result.size();
+            }
+            if (covered) {
+                log.info("New certificate supersedes '{}' (covers all its host names) on this virtual service", id);
+            } else {
+                result.add(id);
             }
         }
-        result.add(newId);
+        if (insertAt < 0) {
+            result.add(newId);
+        } else {
+            result.add(insertAt, newId);
+        }
         return result;
+    }
+
+    /** True if any name of one set is matched by a name of the other, exactly or by a single-label wildcard. */
+    static boolean overlaps(Set<String> a, Set<String> b) {
+        for (String x : a) {
+            for (String y : b) {
+                if (nameMatches(x, y) || nameMatches(y, x)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean nameMatches(String pattern, String host) {
+        if (pattern.equals(host)) {
+            return true;
+        }
+        return pattern.startsWith("*.") && !host.startsWith("*.") && host.indexOf('.') > 0
+                && host.substring(host.indexOf('.')).equals(pattern.substring(1));
     }
 
     /** True if every old name is matched by a new name (exactly or by a single-label wildcard). */

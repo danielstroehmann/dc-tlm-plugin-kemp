@@ -40,6 +40,41 @@ final class MockedPlugin extends KempLoadMasterPlugin {
         return KempClient.forBaseUrl(baseUrl, apiKey, 0);
     }
 
+    /** Handshakes the plugin performed (host:port), via the seams below. */
+    final java.util.List<String> lookups = new java.util.ArrayList<>();
+
+    /**
+     * Replaces the TLS lookup of presented certificates. Default: real lookup for loopback test servers only; any
+     * other address fails the test instead of reaching the network.
+     */
+    java.util.function.BiFunction<String, Integer, java.util.Optional<java.security.cert.X509Certificate>> served =
+            (host, port) -> {
+                if (!"127.0.0.1".equals(host)) {
+                    throw new AssertionError("unexpected real TLS handshake to " + host + ":" + port);
+                }
+                return io.github.danielstroehmann.tlm.kemp.loadmaster.ServedCertificate.fetch(host, port,
+                        java.time.Duration.ofSeconds(3));
+            };
+
+    private java.util.Optional<java.security.cert.X509Certificate> lookup(String host, Integer port) {
+        lookups.add(host + ":" + port);
+        return served.apply(host, port);
+    }
+
+    @Override
+    Inventory inventory(KempClient client) {
+        Inventory inventory = super.inventory(client);
+        inventory.servedCertificate = this::lookup;
+        return inventory;
+    }
+
+    @Override
+    CertificateService certificateService(KempClient client) {
+        CertificateService service = super.certificateService(client);
+        service.servedCertificate = this::lookup;
+        return service;
+    }
+
     static ObjectNode request(Map<String, ?> fields) {
         ObjectNode n = MAPPER.createObjectNode();
         fields.forEach((k, v) -> n.set(k, MAPPER.valueToTree(v)));

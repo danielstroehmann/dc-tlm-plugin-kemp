@@ -1,6 +1,7 @@
 package io.github.danielstroehmann.tlm.kemp;
 
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -9,6 +10,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiFunction;
 
 import com.digicert.tlm.workflows.automation.dto.RefreshConfigurationResponse;
 import com.digicert.tlm.workflows.automation.dto.RefreshConfigurationResponse.AutomationInfo;
@@ -18,6 +20,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import io.github.danielstroehmann.tlm.kemp.client.KempApiException;
 import io.github.danielstroehmann.tlm.kemp.client.KempClient;
+import io.github.danielstroehmann.tlm.kemp.loadmaster.ServedCertificate;
 import io.github.danielstroehmann.tlm.kemp.loadmaster.Snapshot;
 import io.github.danielstroehmann.tlm.kemp.loadmaster.VirtualService;
 import io.github.danielstroehmann.tlm.kemp.pki.Pem;
@@ -27,8 +30,21 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 final class Inventory {
 
+    /**
+     * Identifier prefix reported for Kemp's built-in default certificate, which has no usable Kemp identifier.
+     * Kemp generates one per virtual service, so the service index makes it unique.
+     */
+    static final String FACTORY_CERTIFICATE = "kemp-factory-certificate";
+
+    /** Upper bound for all handshakes of one inventory, so unreachable data IPs cannot stall the refresh. */
+    static final Duration HANDSHAKE_BUDGET = Duration.ofSeconds(30);
+
     private final KempClient client;
     private final Map<String, String> pemCache = new HashMap<>();
+
+    /** Reads the certificate a service presents in the TLS handshake; replaceable in tests. */
+    BiFunction<String, Integer, Optional<X509Certificate>> servedCertificate =
+            (host, port) -> ServedCertificate.fetch(host, port, ServedCertificate.DEFAULT_TIMEOUT);
 
     Inventory(KempClient client) {
         this.client = client;
@@ -38,6 +54,7 @@ final class Inventory {
         List<DataIpInfo> endpoints = new ArrayList<>();
         List<Certificate> certificates = new ArrayList<>();
         Set<String> dataIps = new LinkedHashSet<>();
+        long handshakeDeadline = System.nanoTime() + HANDSHAKE_BUDGET.toNanos();
 
         for (VirtualService vs : snapshot.manageable()) {
             if (vs.certificates().stream().anyMatch(snapshot.acmeCertificates()::contains)) {
@@ -47,10 +64,22 @@ final class Inventory {
             }
             dataIps.add(vs.address());
             String alias = snapshot.alias(vs);
-            endpoints.add(endpoint(snapshot, vs.address(), vs.port(), alias, vs.certificates()));
-            for (String id : vs.certificates()) {
-                certificate(vs.address(), vs.port(), id, vs.certificates().size() > 1).ifPresent(certificates::add);
+            List<String> ids = vs.certificates();
+            for (String id : ids) {
+                certificate(vs.address(), vs.port(), id, ids.size() > 1).ifPresent(certificates::add);
             }
+            if (vs.factoryCertificate() && System.nanoTime() - handshakeDeadline >= 0) {
+                log.info("Skipping lookup of the built-in certificate on {}: time budget for handshakes used up",
+                        vs.endpoint());
+            } else if (vs.factoryCertificate()) {
+                // Reported so TLM offers "Renew", which then performs the first install (TLM offers no request for
+                // plugin endpoints without a certificate). Unreachable from the sensor: stays an unsecured endpoint.
+                Optional<Certificate> factory = servedCertificate.apply(vs.address(), vs.port())
+                        .flatMap(cert -> factoryCertificate(vs, cert));
+                factory.ifPresent(certificates::add);
+                ids = factory.isPresent() ? List.of(factory.get().getServerParam()) : ids;
+            }
+            endpoints.add(endpoint(snapshot, vs.address(), vs.port(), alias, ids));
         }
 
         // Case H is offered only when the API key may actually set the web UI certificate ("All Permissions") and
@@ -101,6 +130,25 @@ final class Inventory {
         d.setAlias(alias);
         d.setPortWithCert(port + ":" + String.join(",", certIds));
         return d;
+    }
+
+    private static Optional<Certificate> factoryCertificate(VirtualService vs, X509Certificate cert) {
+        String ip = vs.address();
+        int port = vs.port();
+        try {
+            Certificate c = new Certificate();
+            c.setIpAddress(ip);
+            c.setPort(port);
+            c.setIpAndPort(ip + ":" + port);
+            c.setCertificate(Pem.toPem(cert));
+            c.setSni(false);
+            c.setServerParam(FACTORY_CERTIFICATE + "-" + vs.index());
+            c.setDomainName(Pem.commonName(cert));
+            return Optional.of(c);
+        } catch (Exception e) {
+            log.warn("Factory certificate of {}:{} could not be encoded: {}", ip, port, e.getMessage());
+            return Optional.empty();
+        }
     }
 
     /** Empty if the certificate cannot be read — reporting an empty PEM would corrupt the TLM inventory. */

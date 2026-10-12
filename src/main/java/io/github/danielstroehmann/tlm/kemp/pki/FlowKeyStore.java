@@ -71,14 +71,14 @@ public final class FlowKeyStore {
         Path file = flowDir(flowId).resolve(KEY_FILE);
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("No private key stored for flow " + flowId
-                    + " — generateCsr must run on the same sensor before installCertificate");
+                    + " - generateCsr must run on the same sensor before installCertificate");
         }
         byte[] pkcs8;
         try {
             pkcs8 = CryptoPolicy.get().pbeUnwrapPrivateKey(Files.readAllBytes(file), password);
         } catch (GeneralSecurityException e) {
             throw new GeneralSecurityException("Stored private key for flow " + flowId
-                    + " cannot be decrypted — was the connector's API key changed since generateCsr?", e);
+                    + " cannot be decrypted - was the connector's API key changed since generateCsr?", e);
         }
         try {
             return new JcaPEMKeyConverter().getPrivateKey(PrivateKeyInfo.getInstance(pkcs8));

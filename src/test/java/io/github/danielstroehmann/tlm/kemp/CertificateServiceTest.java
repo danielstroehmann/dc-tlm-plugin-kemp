@@ -204,6 +204,22 @@ class CertificateServiceTest {
         assertFalse(CertificateService.covers(Set.of(), names("www.example.com")));
     }
 
+    @Test
+    void overlapsInEitherDirection() {
+        assertTrue(CertificateService.overlaps(names("a.example.com", "shared.example.com"), names("shared.example.com")));
+        assertTrue(CertificateService.overlaps(names("shared.example.com"), names("a.example.com", "shared.example.com")));
+        assertTrue(CertificateService.overlaps(names("www.example.com"), names("*.example.com")), "old wildcard");
+        assertTrue(CertificateService.overlaps(names("*.example.com"), names("www.example.com")), "new wildcard");
+        assertTrue(CertificateService.overlaps(names("*.example.com"), names("*.example.com")));
+        assertFalse(CertificateService.overlaps(names("*.example.com"), names("a.b.example.com")), "one label only");
+        assertFalse(CertificateService.overlaps(names("*.example.com"), names("example.com")));
+        assertFalse(CertificateService.overlaps(names("*.example.com"), names("*.example.net")));
+        assertFalse(CertificateService.overlaps(names("*.a.example.com"), names("*.example.com")), "wildcards never match each other");
+        assertFalse(CertificateService.overlaps(names("b.example.com"), names("a.example.com")));
+        assertFalse(CertificateService.overlaps(Set.of(), names("a.example.com")));
+        assertFalse(CertificateService.overlaps(names("a.example.com"), Set.of()));
+    }
+
     // ---- validateLeaf --------------------------------------------------------------------------------------
 
     private static final java.time.Instant NOW = java.time.Instant.now();

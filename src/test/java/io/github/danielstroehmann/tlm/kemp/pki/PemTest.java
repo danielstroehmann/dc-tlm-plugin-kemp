@@ -190,6 +190,15 @@ class PemTest {
         assertThrows(CertificateException.class, () -> Pem.parseCertificatesDer(new byte[] { 0x30, 0x03, 0x01, 0x02, 0x03 }));
     }
 
+    @Test
+    void keyFamilyNormalizesBouncyCastleNames() throws Exception {
+        assertEquals("RSA", Pem.keyFamily(LEAF));
+        X509Certificate ecBc = CA.issue(TestPki.ec("secp384r1").getPublic(), "ec.example.com", BigInteger.valueOf(21));
+        assertEquals("EC", Pem.keyFamily(ecBc));
+        assertEquals("EC", Pem.keyFamily(Pem.parseCertificate(TestPki.pem(ecBc))), "JDK-parsed");
+        assertEquals("RSA", Pem.keyFamily(Pem.parseCertificate(TestPki.pem(LEAF))));
+    }
+
     private static X509Certificate selfSignedWithSubject(String dn) throws Exception {
         KeyPair kp = TestPki.rsa(2048);
         org.bouncycastle.asn1.x500.X500Name name = new org.bouncycastle.asn1.x500.X500Name(dn);

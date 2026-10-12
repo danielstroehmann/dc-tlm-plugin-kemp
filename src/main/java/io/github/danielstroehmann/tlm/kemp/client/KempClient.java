@@ -213,7 +213,7 @@ public class KempClient implements AutoCloseable {
             setAdminCertificate(current);
         }
         throw new KempApiException("LoadMaster accepted the admincert permission probe; web UI certificate '"
-                + current + "' was restored — refusing to continue");
+                + current + "' was restored - refusing to continue");
     }
 
     private boolean allowed(String cmd, Map<String, String> params) throws KempApiException {

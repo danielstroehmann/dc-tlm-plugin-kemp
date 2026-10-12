@@ -91,6 +91,16 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
         return KempClient.connect(host, port, apiKey);
     }
 
+    /** Overridable in tests to replace the TLS lookup of presented certificates. */
+    Inventory inventory(KempClient client) {
+        return new Inventory(client);
+    }
+
+    /** Overridable in tests to replace the TLS lookup of presented certificates. */
+    CertificateService certificateService(KempClient client) {
+        return new CertificateService(client);
+    }
+
     /** Positions and code points of characters outside printable ASCII, e.g. "[U+FEFF at 0]" — reveals no key content. */
     static String nonPrintable(String value) {
         List<String> found = new ArrayList<>();
@@ -115,7 +125,7 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
     String host() throws WorkflowExecutionException {
         String host = config == null || config.getManagementHost() == null ? "" : config.getManagementHost().trim();
         if (host.isEmpty() || host.length() > 253 || !HOST.matcher(host).matches()) {
-            throw new WorkflowExecutionException("Invalid or missing LoadMaster host — use a hostname, an IPv4 address"
+            throw new WorkflowExecutionException("Invalid or missing LoadMaster host - use a hostname, an IPv4 address"
                     + " or a bracketed IPv6 address, without protocol or port");
         }
         return host;
@@ -191,7 +201,7 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
         try (KempClient client = openClient()) {
             String version = client.get("version");
             Capabilities caps = client.probeCapabilities();
-            log.info("Connected to LoadMaster {} — capabilities {}", version, caps);
+            log.info("Connected to LoadMaster {} - capabilities {}", version, caps);
             TestConnectionResponse<JsonNode> response = new TestConnectionResponse<>();
             List<String> missing = caps.missingStandardPermissions();
             response.setActive(missing.isEmpty());
@@ -213,7 +223,7 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
         try (KempClient client = openClient()) {
             Snapshot snapshot = Snapshot.load(client, host());
             // Only the web UI capability matters here; fewer probes mean less noise in the LoadMaster audit log.
-            return new Inventory(client).build(snapshot, client.probeAdminCertificate());
+            return inventory(client).build(snapshot, client.probeAdminCertificate());
         } catch (WorkflowExecutionException e) {
             throw e;
         } catch (Exception e) {
@@ -255,10 +265,10 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
             Snapshot snapshot = Snapshot.load(client, host());
             Target target = snapshot.resolve(r.getIpAddress(), r.getPort(), r.getVirtualServerName())
                     .orElseThrow(() -> new WorkflowExecutionException("No manageable endpoint for " + r.getIpAddress()
-                            + ":" + r.getPort() + " (" + r.getVirtualServerName() + ") — SSL must be enabled on the virtual service"));
+                            + ":" + r.getPort() + " (" + r.getVirtualServerName() + ") - SSL must be enabled on the virtual service"));
             List<X509Certificate> certificates = obtainCertificates(r);
             Capabilities caps = client.probeCapabilities();
-            CertificateService service = new CertificateService(client);
+            CertificateService service = certificateService(client);
 
             // A retry after a completed install must succeed without changes (the key is gone by then).
             Optional<PrivateKey> key = keyStore.exists(r.getFlowId())
@@ -266,7 +276,7 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
                     : Optional.empty();
             if (!service.alreadyInstalled(snapshot, caps, target, certificates, key)) {
                 PrivateKey privateKey = key.orElseThrow(() -> new WorkflowExecutionException("No private key stored for flow "
-                        + r.getFlowId() + " — generateCsr must run on the same sensor before installCertificate"));
+                        + r.getFlowId() + " - generateCsr must run on the same sensor before installCertificate"));
                 service.install(snapshot, caps, target, privateKey, CertificateService.buildChain(certificates, privateKey),
                         r.getCurrentCertificateThumbprint());
             }
@@ -287,7 +297,7 @@ public class KempLoadMasterPlugin extends AbstractAutomationWorkflow {
             Target target = snapshot.resolve(r.getIpAddress(), r.getPort(), r.getVirtualServerName())
                     .orElseThrow(() -> new WorkflowExecutionException("No manageable endpoint for " + r.getIpAddress()
                             + ":" + r.getPort() + " (" + r.getVirtualServerName() + ")"));
-            Optional<String> pem = new CertificateService(client).findBound(snapshot, target, r.getCertificateSerialNumber());
+            Optional<String> pem = certificateService(client).findBound(snapshot, target, r.getCertificateSerialNumber());
             if (pem.isEmpty()) {
                 throw new WorkflowExecutionException("Certificate with serial " + r.getCertificateSerialNumber()
                         + " is not bound to " + r.getIpAddress() + ":" + r.getPort());

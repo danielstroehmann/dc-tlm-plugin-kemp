@@ -59,9 +59,15 @@ class PluginConnectionAndInventoryTest {
     }
 
     @AfterEach
-    void stop() {
+    void stop() throws Exception {
         lm.close();
+        if (factoryServer != null) {
+            factoryServer.close();
+        }
     }
+
+    /** Stands in for a virtual service presenting Kemp's built-in certificate (no network beyond loopback). */
+    private io.github.danielstroehmann.tlm.kemp.testsupport.LocalServers.Tls factoryServer;
 
     // ---- testConnection ------------------------------------------------------------------------------------
 
@@ -177,10 +183,15 @@ class PluginConnectionAndInventoryTest {
     // ---- refreshConfiguration ------------------------------------------------------------------------------
 
     private void testbed() {
+        try {
+            factoryServer = new io.github.danielstroehmann.tlm.kemp.testsupport.LocalServers.Tls("Kemp Factory Example");
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
         lm.vs(1, "192.0.2.10", 443, "tcp", "app", true, "app-cert") // A: offload
                 .vs(2, "198.51.100.20", 8443, "tcp", "app-alt", true, "app-cert") // C: shared certificate
                 .vs(3, "192.0.2.11", 443, "tcp", "sni", true, "portal shop") // D: SNI
-                .vs(4, "192.0.2.12", 443, "tcp", "fresh", true, "0123456789abcdef0123456789abcdef") // F: factory cert
+                .vs(4, "127.0.0.1", factoryServer.port(), "tcp", "fresh", true, "0123456789abcdef0123456789abcdef") // F
                 .vs(5, "192.0.2.13", 80, "tcp", "plain", false, null) // no SSL
                 .vs(6, "192.0.2.14", 443, "tcp", "cs", true, "portal") // E: content switching parent
                 .subVs(7, 6, "cs-sub", true)
@@ -214,7 +225,8 @@ class PluginConnectionAndInventoryTest {
         assertEquals("default", app.getPartition());
         assertEquals("443:app-cert", app.getPortWithCert());
         assertEquals("443:portal,shop", eps.get("sni").getPortWithCert());
-        assertEquals("443:", eps.get("fresh").getPortWithCert(), "factory certificate is not reported as identifier");
+        assertEquals(factoryServer.port() + ":kemp-factory-certificate-4", eps.get("fresh").getPortWithCert(),
+                "factory certificate is reported under the reserved identifier");
         assertEquals("8443:web-ui", eps.get("management").getPortWithCert());
         assertEquals("192.0.2.1", eps.get("management").getDataIp());
         assertEquals(8443, eps.get("management").getPort());
@@ -226,7 +238,12 @@ class PluginConnectionAndInventoryTest {
         RefreshConfigurationResponse<JsonNode> r = (RefreshConfigurationResponse<JsonNode>) plugin.refreshConfiguration(null);
         List<Certificate> certs = r.getCertificates();
         // app(1) + app-alt(1) + sni(2) + cs(1) + dup(1) + dup(1) + management(1)
-        assertEquals(8, certs.size());
+        // ... + the factory certificate read from the handshake
+        assertEquals(9, certs.size());
+        Certificate factory = find(certs, "127.0.0.1:" + factoryServer.port(), "kemp-factory-certificate-4").orElseThrow();
+        assertEquals(io.github.danielstroehmann.tlm.kemp.pki.Pem.toPem(factoryServer.certificate), factory.getCertificate());
+        assertEquals("Kemp Factory Example", factory.getDomainName());
+        assertFalse(factory.isSni());
 
         Certificate app = find(certs, "192.0.2.10:443", "app-cert").orElseThrow();
         assertEquals("192.0.2.10", app.getIpAddress());
@@ -260,7 +277,7 @@ class PluginConnectionAndInventoryTest {
         assertEquals("disabled", info.getFips());
         assertEquals("", info.getPeerInfo());
         assertArrayEquals(new String[] { "default" }, info.getPartitions());
-        assertEquals(List.of("192.0.2.10", "198.51.100.20", "192.0.2.11", "192.0.2.12", "192.0.2.14", "192.0.2.16",
+        assertEquals(List.of("192.0.2.10", "198.51.100.20", "192.0.2.11", "127.0.0.1", "192.0.2.14", "192.0.2.16",
                 "192.0.2.17"), List.of(info.getDataIps()));
     }
 
@@ -271,6 +288,27 @@ class PluginConnectionAndInventoryTest {
         var info = ((RefreshConfigurationResponse<JsonNode>) plugin.refreshConfiguration(null)).getAutomationInfo();
         assertEquals("enabled", info.getFips());
         assertEquals("192.0.2.1:ACTIVE", info.getPeerInfo());
+    }
+
+    @Test
+    void factoryCertificateViaPluginSeam() throws Exception {
+        X509Certificate factory = TestPki.selfSigned(TestPki.rsa(2048), "Kemp Factory Seam");
+        plugin.served = (host, port) -> Optional.of(factory);
+        lm.vs(4, "192.0.2.12", 443, "tcp", "fresh", true, "0123456789abcdef0123456789abcdef");
+        RefreshConfigurationResponse<JsonNode> r = (RefreshConfigurationResponse<JsonNode>) plugin.refreshConfiguration(null);
+        assertEquals(List.of("192.0.2.12:443"), plugin.lookups);
+        assertEquals("443:kemp-factory-certificate-4", byAlias(r).get("fresh").getPortWithCert());
+        assertEquals(io.github.danielstroehmann.tlm.kemp.pki.Pem.toPem(factory),
+                find(r.getCertificates(), "192.0.2.12:443", "kemp-factory-certificate-4").orElseThrow().getCertificate());
+    }
+
+    @Test
+    void unreachableFactoryServiceStaysUnsecured() throws Exception {
+        int closed = io.github.danielstroehmann.tlm.kemp.testsupport.LocalServers.closedPort();
+        lm.vs(4, "127.0.0.1", closed, "tcp", "fresh", true, "0123456789abcdef0123456789abcdef");
+        RefreshConfigurationResponse<JsonNode> r = (RefreshConfigurationResponse<JsonNode>) plugin.refreshConfiguration(null);
+        assertEquals(closed + ":", byAlias(r).get("fresh").getPortWithCert());
+        assertTrue(r.getCertificates().stream().noneMatch(c -> c.getServerParam().startsWith("kemp-factory-certificate")));
     }
 
     @Test

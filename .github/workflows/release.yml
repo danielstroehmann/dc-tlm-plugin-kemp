@@ -55,10 +55,15 @@ jobs:
             echo "::error::CHANGELOG.md has no section for [$VERSION]"; exit 1
           fi
 
+      - name: Resolve dependencies (runs no project or SDK code)
+        run: mvn -B -s settings.xml --no-transfer-progress org.apache.maven.plugins:maven-dependency-plugin:3.8.1:resolve
+
+      - name: TLM SDK artifacts match the pinned checksums (before any SDK code runs)
+        run: scripts/verify-sdk.sh
+
       - name: Test and build
         run: |
           mvn -B -s settings.xml --no-transfer-progress clean package
-          scripts/verify-sdk.sh
           scripts/check-public.sh
 
       - name: Collect release assets

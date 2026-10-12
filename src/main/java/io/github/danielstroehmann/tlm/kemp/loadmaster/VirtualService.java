@@ -10,13 +10,13 @@ import com.fasterxml.jackson.databind.JsonNode;
  * A virtual service as reported by {@code listvs}.
  *
  * @param certificates       assigned certificate identifiers ({@code CertFile}); empty for the factory certificate
- * @param factoryCertificate SSL is on but only Kemp's built-in self-signed certificate is in use
+ * @param factoryCertificate SSL is on but only Kemp's built-in default certificate is in use
  * @param subVs              SubVS of a content-switching service (no own address, certificate lives on the parent)
  */
 public record VirtualService(String index, String address, int port, String protocol, String nickName, boolean ssl,
         List<String> certificates, boolean factoryCertificate, boolean subVs) {
 
-    /** Kemp reports its built-in self-signed certificate as a single 32-hex-digit value in CertFile. */
+    /** Kemp reports its built-in default certificate as a single 32-hex-digit value in CertFile. */
     private static final Pattern FACTORY_CERT = Pattern.compile("^[0-9a-f]{32}$");
 
     public static VirtualService from(JsonNode n) {

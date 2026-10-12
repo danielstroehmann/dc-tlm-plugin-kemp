@@ -89,7 +89,7 @@ class SecretLeakTest {
 
     /**
      * openClient's DEBUG line describes the key as delivered (length, Base64 flag, invisible characters) and as used
-     * (length, SHA-256 prefix) — but neither the plain key nor its Base64 form may appear in logs or exceptions.
+     * (length, SHA-256 prefix) - but neither the plain key nor its Base64 form may appear in logs or exceptions.
      */
     @Test
     void connectDebugLogDescribesKeyWithoutRevealingIt() throws Exception {

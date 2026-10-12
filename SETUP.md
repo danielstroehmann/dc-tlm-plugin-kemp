@@ -4,8 +4,7 @@ This guide describes how a Kemp/Progress LoadMaster must be configured so that t
 DigiCert Trust Lifecycle Manager (TLM) plugin can manage its certificates. It is intended for
 LoadMaster administrators. Menu names of the Kemp web UI are given exactly as they appear in the UI.
 
-> **Status:** LoadMaster preparation. Setting up the plugin in TLM itself (connector,
-> sensor, certificate profile) will be added once the plugin is available.
+> Uploading the plugin and creating the connector in TLM: see [README.md](README.md).
 > Verified on LoadMaster 7.2.63.2 (Free LoadMaster).
 
 ---
@@ -127,8 +126,12 @@ with or without a matching hostname. Nothing needs to be prepared on the LoadMas
 
 - The **DigiCert sensor** running the plugin must reach the LoadMaster via **HTTPS on the
   management port** (443 or 8443).
-- For an HA pair, always use the **shared IP** or its hostname, not the address of an individual
-  node.
+- HA pairs are not supported yet. If used anyway, always use the **shared IP** or its hostname, not the
+  address of an individual node.
+- Optional: for Virtual Services that only use Kemp's **built-in certificate**, the sensor must also reach
+  the Virtual Service's address and port. The plugin reads that certificate from the TLS handshake so TLM can
+  offer "Renew", which installs the first real certificate. Without that access such services stay
+  "unsecured" in TLM.
 - The LoadMaster drops the connection if **more than 30 API calls arrive within 3 seconds**. Other
   automations accessing the same API at the same time count towards this limit.
 

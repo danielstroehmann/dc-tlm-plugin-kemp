@@ -1,6 +1,6 @@
 # Status: TLM Plugin for Kemp LoadMaster
 
-As of: 2026-10-11 · Phase: 0.2.0 (pre-release); fix for real TLM sensors, verified with a real sensor's plugin input
+As of: 2026-10-11 · Phase: 1.0.0 (first stable release); all in-scope cases verified in a TLM tenant
 
 This document records which initial configurations on Kemp LoadMasters we assume, which TLS tasks
 that are manual today the plugin is meant to automate, and which decisions are still open. How to
@@ -19,8 +19,8 @@ prepare the LoadMaster is described in [SETUP.md](SETUP.md).
 | Write permissions of the API user | ✅ confirmed: `addcert`, `modvs` (SSL, `CertFile`, Reencrypt, SubVS) and `addrs` |
 | Test environment | ✅ set up: cases A–E, F1/F2, H, details locally in `local/testbed/` (not in the repo) |
 | Plugin 0.1.0 | ✅ built; all five actions verified live against the test LoadMaster (sensor simulated locally with `scripts/run-plugin-action.sh`): cases A–E, F1 and H end-to-end with a local test CA |
-| Automated tests / review | ✅ 354 tests green (2 live smoke tests run on demand); two independent code reviews and a security review, findings fixed |
-| TLM tenant with sensor | **still open** (needed for the end-to-end test with real issuance) |
+| Automated tests / review | ✅ 463 tests green (2 live smoke tests run on demand); two independent code reviews and a security review, findings fixed |
+| TLM tenant with sensor | ✅ verified end to end: 0.2.0 cases A-E and H, 0.3.0 case F1 (see section 6) |
 
 ---
 
@@ -87,13 +87,17 @@ The most common case.
 - The plugin always targets the parent Virtual Service.
 - Example on the test LoadMaster: Virtual Service 2 with sub-Virtual Service 3.
 
-### F. Virtual Service without its own certificate: limited, decision open
+### F. Virtual Service without its own certificate: F1 in scope, F2 out of scope
 
-- A Virtual Service that uses SSL but only has the self-signed Kemp factory certificate.
-- Or a plain HTTP Virtual Service for which TLS is yet to be set up.
-- In TLM such endpoints appear as "unsecured", and a certificate can be requested there.
-- **Open:** May the plugin enable SSL on the Virtual Service itself for this, or only serve Virtual
-  Services where SSL is already on? (see section 6)
+- **F1:** A Virtual Service that uses SSL but only has Kemp's built-in default certificate (issued per
+  Virtual Service by Kemp's own "KEMP Technologies" CA, CN = appliance IP). The API does
+  not expose that certificate, so the plugin reads it from the TLS handshake and reports it (identifier
+  `kemp-factory-certificate-<VS index>`). TLM then offers "Renew", which installs the first real certificate. TLM offers
+  no certificate request for plugin endpoints without a certificate (verified in a tenant), so this is the
+  only way. Requires that the sensor reaches the Virtual Service's address; otherwise the endpoint stays
+  "unsecured" in TLM.
+- **F2:** A plain HTTP Virtual Service for which TLS is yet to be set up. The plugin never enables SSL: that
+  is a configuration decision (ciphers, re-encryption, redirects), not certificate management.
 
 ### G. Certificates from the built-in ACME client: out of scope
 
@@ -158,9 +162,10 @@ The most common case.
   certificates.
 - **Cipher sets, TLS versions, Real Servers and other Virtual Service settings** remain
   unchanged. The plugin only changes certificates and their assignment.
-- **The sensor only reaches the management interface**, not necessarily the data IPs of the Virtual
-  Services. Post-installation validation therefore runs via the API, not via a
-  TLS connection to the Virtual Service.
+- **The sensor reaches the management interface**, not necessarily the data IPs of the Virtual
+  Services. Inventory and post-installation validation therefore run via the API, not via a
+  TLS connection to the Virtual Service. Only case F1 (Kemp's built-in certificate) needs the data IP,
+  because that certificate is readable only from the TLS handshake.
 
 ---
 
@@ -190,6 +195,7 @@ tenant. Implemented:
 | `sslState` | always `1`; only Virtual Services with SSL termination are reported |
 | `portWithCert` | `Port:Identifier1,Identifier2` |
 | `certificates[]` | one entry per assigned certificate (`sni=true` if multiple), `serverParam` = Kemp identifier |
+| Kemp's built-in certificate | read from the TLS handshake; identifier `kemp-factory-certificate-<VS index>` |
 | `peerInfo` | HA status, empty without HA |
 | Endpoint `management` | Web UI: management IP + WUI port with the `admincert`, only with "All Permissions" |
 
@@ -207,6 +213,7 @@ then via the alias in `virtualServerName` (`default/<alias>` or `<alias>`).
 | 2026-10-11 | **Scope of the first version: cases A, B, C, D, E and H.** HA (I) is excluded. F is open, G and J are out of scope. | A test configuration with self-signed certificates is set up for each case, runbook locally in `local/testbed/` (not in the repo). |
 | 2026-10-11 | **Case H is optional and is detected automatically.** On "Test connection" and during inventory, the plugin checks without side effects which permissions the API key has. Only with "All Permissions" does it offer the web UI certificate. For A–E, the three minimal permissions are sufficient. | Kemp allows `set admincert` only with "All Permissions". Permission check see section 7; guide for admins in [SETUP.md](SETUP.md). |
 | 2026-10-11 | **The certificate of the LoadMaster itself (web UI/API) is managed as well**, in addition to the Virtual Services where automation makes sense. | Case H is in scope. |
+| 2026-10-11 | **Kemp's built-in certificate is read from the TLS handshake without verification** (case F1). | The API does not expose it, and TLM offers "Renew" only for an endpoint with a certificate. Only a handshake is made (no data sent, 3 s timeout, 30 s in total per inventory); at install, TLM's thumbprint must match the certificate presented at that moment, otherwise nothing is written. Limitation: Kemp's built-in certificate is recognized by its 32-hex-digit value in `CertFile`; a user certificate named exactly like that would be treated the same way. |
 | 2026-10-11 | **For the connection to the LoadMaster, the plugin accepts any certificate**: trusted or not, with or without a matching hostname. There is neither chain nor hostname verification. | The connection works with the self-signed factory certificate, via the IP address, and also after the plugin itself has replaced the web UI certificate. **Deliberately accepted risk:** anyone on the network between sensor and LoadMaster who impersonates the LoadMaster can capture the API key **and every private key the plugin installs** (they travel inside the `addcert` request), and can feed a fake inventory to TLM. Countermeasures are an isolated management network and an API user with minimal permissions. |
 
 ### Verified on a real TLM sensor (2026-10-11)
@@ -216,6 +223,24 @@ then via the alias in `virtualServerName` (`default/<alias>` or `<alias>`).
 - **Settings in the `sensitive` credential set arrive Base64-encoded** (the API key: 60 characters instead of
   44). Version 0.1.0 used the value as is and got HTTP 401 from the LoadMaster; fixed in 0.2.0.
 - The SDK runtime, entry point discovery and the result upload work on the sensor as in the local simulation.
+
+### Verified in a TLM tenant (2026-10-11, version 0.2.0)
+
+- Renewals via TLM worked end to end for cases H (web UI), A, B, C (one TLM flow, both services updated),
+  D (SNI entry selected by thumbprint) and E: real DigiCert certificates, full chains, no leftover objects.
+- TLM sends `virtualServerName` as `default/<alias>`, the port as a string, the old certificate's SHA-256
+  thumbprint (upper case) and the serial as lower-case hex with leading zero.
+- Endpoints without a certificate appear in TLM under "Unsecured" / "Not configured", but TLM offers no
+  certificate request for them (only "View audit trail"). Case F1 is therefore handled via "Renew" of the
+  reported Kemp factory certificate (0.3.0).
+
+### Verified in a TLM tenant (2026-10-12, version 0.3.0)
+
+- Case F1 on two Virtual Services: the inventory reported Kemp's built-in certificate of each service (issued
+  by Kemp's own CA, CN = appliance IP); "Renew" in TLM with a new common name installed the first DigiCert
+  certificate as `tlm-<CN>` and replaced the built-in one. TLM sent the built-in certificate's SHA-256
+  thumbprint, which the plugin confirmed against the presented certificate before writing. The common name
+  can be changed in TLM when renewing.
 
 ### Provisionally implemented (default in 0.1.0, confirmation pending)
 
@@ -232,10 +257,14 @@ The proposals were implemented for the first version. Each default can be change
 | 7 | Which Virtual Services | All top-level Virtual Services with SSL termination, except those with ACME certificates. |
 
 Further behavior rules:
-- Initial provisioning on a Virtual Service with existing certificates (without a matching thumbprint):
-  an existing certificate for the **same host names** is superseded at its list position (clients
-  without SNI get the first entry, verified on 7.2.63); only certificates for other host names
-  remain and the new one is appended (SNI).
+- Initial provisioning on a Virtual Service with existing certificates (without a thumbprint):
+  Kemp serves the first matching entry of `CertFile` (clients without SNI get the first entry, verified
+  on 7.2.63). Entries whose host names the new certificate covers completely and that use the same key
+  type are removed (an RSA/ECDSA pair keeps its other half). The new certificate takes the position of
+  the first entry it covers or overlaps; without any overlap it is appended (SNI). This can change the
+  default certificate for clients without SNI.
+- "Renew" of Kemp's built-in certificate is a first install: TLM's thumbprint must match the certificate
+  the service presents at that moment, otherwise the install is refused before any write.
 - A thumbprint that matches nothing on the target aborts the install before anything is written.
 - Installs are repeatable: if the certificate is already in place, the plugin reports success
   without changes. If assigning a newly uploaded certificate fails, the upload is rolled back.
@@ -292,7 +321,8 @@ is missing.
 - [x] Set up test environment for A–E, F1/F2 and H (locally: `local/testbed/`)
 - [ ] Clarify access to a TLM tenant with sensor
 - [x] Plugin 0.1.0 implemented and verified live
-- [x] Automated tests (354, test agent), two independent reviews, security review (full codebase)
+- [x] Automated tests (463, test agent), two independent reviews, security review (full codebase)
 - [ ] Verify permissions individually (section 7) and reset user `api` to minimal permissions
 - [x] License: MIT
-- [ ] Upload to a TLM tenant and end-to-end test with a real sensor
+- [x] Upload to a TLM tenant and end-to-end test with a real sensor (0.2.0: cases A-E, H)
+- [x] 0.3.0 in the TLM tenant: first certificate via "Renew" of Kemp's built-in certificate (F1)

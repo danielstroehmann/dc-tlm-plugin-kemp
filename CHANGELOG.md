@@ -5,6 +5,30 @@ its GitHub Release. Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0]
+
+First stable release. All supported cases were verified end to end in a TLM tenant with a real sensor and
+LoadMaster 7.2.63: SSL offloading, re-encryption, one certificate on several virtual services, SNI, content
+switching, the LoadMaster web UI certificate, and the first certificate for a virtual service that still uses
+Kemp's built-in certificate. Includes all changes since 0.2.0 (0.3.0 was tested but not published).
+
+- First certificate for a virtual service that has TLS enabled but only Kemp's built-in default
+  certificate: the inventory now reports that certificate (read from the TLS handshake, as the API does not
+  expose it), so TLM offers "Renew"; the plugin then installs the new certificate as the service's first one.
+  TLM offers no certificate request for plugin endpoints without a certificate. Requires that the sensor
+  reaches the virtual service's address (see SETUP.md, section 7); at installation TLM's thumbprint must match
+  the certificate presented at that moment, otherwise nothing is changed.
+- SNI: entries the new certificate covers completely (same key type) are removed, and the new certificate
+  takes the position of the first entry it covers or overlaps, so its host names are served by it (Kemp
+  serves the first matching entry); previously a partly overlapping certificate was appended and could stay
+  unused. Note: clients without SNI get the first entry, so this can change the default certificate of the
+  virtual service.
+- Build pipeline: the TLM SDK jar and POM are checked against pinned checksums right after dependency
+  resolution, before any build or test runs SDK code (previously only the jar, after the tests).
+- Documentation: README.md now covers only what the plugin does, how to prepare the LoadMaster and how to
+  upload the plugin; build, design and security notes moved to DEVELOPMENT.md.
+- Log and error messages are plain ASCII (the sensor log showed "?" for non-ASCII characters).
+
 ## [0.2.0]
 
 Fixes the connection failure seen on a real TLM sensor (verified by replaying the sensor's actual plugin
